@@ -12,7 +12,7 @@ public class ObjectPooler : MonoBehaviour
 
     private Dictionary<string, Queue<GameObject>> m_poolDictionary = new Dictionary<string, Queue<GameObject>>(); // PoolableObject key and Queue of prefab to spawn
 
-    [SerializeField] public Dictionary<PoolableObject, List<Tuple<float, GameObject>>> m_pooledObjectsWithLifeTime = new Dictionary<PoolableObject, List<Tuple<float, GameObject>>>();
+    private Dictionary<PoolableObject, List<Tuple<float, GameObject>>> m_pooledObjectsWithLifeTime = new Dictionary<PoolableObject, List<Tuple<float, GameObject>>>();
 
     private float m_currentTime = 0.0f;
 
@@ -118,6 +118,8 @@ public class ObjectPooler : MonoBehaviour
 
             m_poolDictionary[p_key].Enqueue(spawnedObject);
             m_poolDictionary[p_key].Enqueue(obj);
+
+            TryAddObjectToLifeTimeDictionary(p_key, obj);
 
             return obj;
         }
