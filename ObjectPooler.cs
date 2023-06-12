@@ -1,220 +1,358 @@
 using System;
 using System.Collections.Generic;
-
+using System.Linq;
 using UnityEngine;
+using Utils.Extensions;
 
-public class ObjectPooler : MonoBehaviour
+namespace Pooling
 {
-    public static ObjectPooler m_instance;
+	public class ObjectPooler : MonoBehaviour
+	{
+		[Space, Header("POOLABLE OBJECTS")] 
+		[SerializeField] private List<APoolableObject> poolableObjects = null;
 
-    [Space, Header("POOLABLE OBJECTS")]
-    [SerializeField] private List<PoolableObject> m_poolableObjectList; // List of PoolableObject
+		private Dictionary<APoolableObject, Queue<APoolableObject>> poolDictionary = new Dictionary<APoolableObject, Queue<APoolableObject>>();
 
-    private Dictionary<string, Queue<GameObject>> m_poolDictionary = new Dictionary<string, Queue<GameObject>>(); // PoolableObject key and Queue of prefab to spawn
+		private Dictionary<APoolableObject, List<Tuple<float, APoolableObject>>> pooledObjectsWithLifeTime = new Dictionary<APoolableObject, List<Tuple<float, APoolableObject>>>();
 
-    private Dictionary<PoolableObject, List<Tuple<float, GameObject>>> m_pooledObjectsWithLifeTime = new Dictionary<PoolableObject, List<Tuple<float, GameObject>>>();
+		private Dictionary<APoolableObject, Transform> poolableParents = new Dictionary<APoolableObject, Transform>();
 
-    private float m_currentTime = 0.0f;
+		private static ObjectPooler instance = null;
 
-    void Awake()
-    {
-        m_instance = this;
-    }
+		public static ObjectPooler Instance
+		{
+			get
+			{
+				if (instance == null)
+				{
+					var go = new GameObject("ObjectPooler");
+					go.AddComponent<ObjectPooler>();
 
-    // Use this for initialization
-    void Start()
-    {
-        InitPoolDictionary();
-    }
+					instance = go.GetComponent<ObjectPooler>();
+				}
 
-    void Update()
-    {
-        m_currentTime += Time.deltaTime;
+				return instance;
+			}
+		}
 
-        CheckPooledObjectsLifeTime();
-    }
+		// Use this for initialization
+		void Awake()
+		{
+			if (instance != null && instance != this)
+			{
+				Destroy(this.gameObject);
+				return;
+			}
 
-    void OnDestroy()
-    {
-        m_poolableObjectList.Clear();
-        m_poolDictionary.Clear();
-        m_poolableObjectList.Clear();
-    }
+			instance = this;
 
-    private void InitPoolDictionary()
-    {
-        foreach (PoolableObject poolableObject in m_poolableObjectList)
-        {
-            Queue<GameObject> gameObjectQueue = new Queue<GameObject>();
+			InitPoolDictionary();
+		}
 
-            GameObject parent = new GameObject("[" + poolableObject.m_key + "]");
+		void Update()
+		{
+			CheckPooledObjectsLifeTime();
+		}
 
-            parent.transform.SetParent(transform);
+		void OnDestroy()
+		{
+			ClearAll();
+		}
 
-            poolableObject.SetParent(parent.transform);
+		private void InitPoolDictionary()
+		{
+			if (poolableObjects == null)
+				return;
 
-            for (int i = 0; i < poolableObject.m_size; i++)
-            {
-                GameObject obj = Instantiate(poolableObject.m_prefab);
-                //obj.transform.SetParent(parent.transform);
-                obj.transform.SetParent(poolableObject.GetParent());
+			foreach (APoolableObject poolableObject in poolableObjects)
+			{
+				if (poolDictionary.ContainsKey(poolableObject))
+					continue;
 
-                obj.SetActive(false);
+				Queue<APoolableObject> gameObjectQueue = new Queue<APoolableObject>();
 
-                gameObjectQueue.Enqueue(obj);
-            }
+				GenerateKeyParentAndSet(poolableObject);
 
-            m_poolDictionary.Add(poolableObject.m_key, gameObjectQueue);
-        }
-    }
+				var obj = Instantiate(poolableObject);
 
-    public void AddObjectToPool(PoolableObject p_poolableObject)
-    {
-        if(m_poolableObjectList.Contains(p_poolableObject))
-            return;
+				obj.transform.parent = poolableParents[poolableObject];
 
-        m_poolableObjectList.Add(p_poolableObject);
+				obj.SetActive(false);
 
-        Queue<GameObject> gameObjectQueue = new Queue<GameObject>();
+				gameObjectQueue.Enqueue(obj);
+				
+				poolDictionary.Add(poolableObject, gameObjectQueue);
+			}
+		}
 
-        GameObject parent = new GameObject("[" + p_poolableObject.m_key + "]");
+		public void Warm<T>(T poolable, int size) where T : APoolableObject
+		{
+			poolableObjects ??= new List<APoolableObject>();
 
-        parent.transform.SetParent(transform);
+			if (!poolableObjects.Contains(poolable))
+				AddObjectToPool(poolable);
 
-        p_poolableObject.SetParent(parent.transform);
+			for (int i = 0; i < size - 1; i++)
+			{
+				var obj = Instantiate(poolable);
 
-        for (int i = 0; i < p_poolableObject.m_size; i++)
-        {
-            GameObject obj = Instantiate(p_poolableObject.m_prefab);
-            //obj.transform.SetParent(parent.transform);
-            obj.transform.SetParent(p_poolableObject.GetParent());
+				obj.transform.SetParent(poolableParents[poolable]);
+				obj.SetActive(false);
+				poolDictionary[poolable].Enqueue(obj);
+			}
+		}
 
-            obj.SetActive(false);
+		public void AddObjectToPool<T>(T poolable) where T : APoolableObject
+		{
+			poolableObjects ??= new List<APoolableObject>();
 
-            gameObjectQueue.Enqueue(obj);
-        }
+			if (poolableObjects.Contains(poolable) || poolDictionary.ContainsKey(poolable))
+				return;
 
-        m_poolDictionary.Add(p_poolableObject.m_key, gameObjectQueue);
-    }
+			poolableObjects.Add(poolable);
 
-    public GameObject SpawnObjectFromPool(string p_key, Vector3 p_position, Quaternion p_rotation)
-    {
-        if (!m_poolDictionary.ContainsKey(p_key))
-        {
-            Debug.LogWarning($"Pool with Key {p_key} doesn't exist.");
-            return null;
-        }
+			Queue<APoolableObject> gameObjectQueue = new Queue<APoolableObject>();
 
-        GameObject spawnedObject = m_poolDictionary[p_key].Dequeue();
+			GenerateKeyParentAndSet(poolable);
 
-        PoolableObject currentPoolableObject = GetPoolableObject(p_key);
+			var obj = Instantiate(poolable);
 
-        if (spawnedObject.activeSelf && !currentPoolableObject.m_canRecyleWithoutLifeTime)
-        {
-            GameObject obj = Instantiate(currentPoolableObject.m_prefab, p_position, p_rotation);
-            obj.transform.SetParent(currentPoolableObject.GetParent());
-            obj.transform.position = p_position;
-            obj.transform.rotation = p_rotation;
+			obj.transform.parent = poolableParents[poolable];
 
-            m_poolDictionary[p_key].Enqueue(spawnedObject);
-            m_poolDictionary[p_key].Enqueue(obj);
+			obj.SetActive(false);
 
-            TryAddObjectToLifeTimeDictionary(p_key, obj);
+			gameObjectQueue.Enqueue(obj);
 
-            return obj;
-        }
+			poolDictionary.Add(poolable, gameObjectQueue);
+		}
 
-        spawnedObject.transform.position = p_position;
-        spawnedObject.transform.rotation = p_rotation;
-        spawnedObject.SetActive(true);
+		public void Resize<T>(T poolable, int newSize) where T : APoolableObject
+		{
+			if (!poolDictionary.ContainsKey(poolable))
+				return;
 
-        m_poolDictionary[p_key].Enqueue(spawnedObject);
+			if (poolDictionary[poolable].Count == newSize)
+				return;
 
-        TryAddObjectToLifeTimeDictionary(p_key, spawnedObject);
+			bool isBigger = poolDictionary[poolable].Count < newSize;
 
-        return spawnedObject;
-    }
+			int diff = poolDictionary[poolable].Count - newSize;
 
-    private void TryAddObjectToLifeTimeDictionary(string p_poolableObjectKey, GameObject p_object)
-    {
-        for (int i = 0; i < m_poolableObjectList.Count; i++)
-        {
-            if (m_poolableObjectList[i].m_key == p_poolableObjectKey)
-            {
-                if (m_poolableObjectList[i].m_lifeTime > 0.0f)
-                {
-                    PoolableObject currentPoolableObject = m_poolableObjectList[i];
+			diff = Math.Abs(diff);
 
-                    float currentTime = Time.time;
+			int count = 0;
 
-                    if (m_pooledObjectsWithLifeTime.ContainsKey(currentPoolableObject))
-                    {
-                        bool isObjectAlreadySet = false;
+			while (count != diff)
+			{
+				if (isBigger)
+				{
+					var obj = Instantiate(poolable);
 
-                        for (int j = 0; j < m_pooledObjectsWithLifeTime[currentPoolableObject].Count; j++)
-                        {
-                            if (m_pooledObjectsWithLifeTime[currentPoolableObject][j].Item2 == p_object)
-                            {
-                                isObjectAlreadySet = true;
-                                m_pooledObjectsWithLifeTime[currentPoolableObject][j] = new Tuple<float, GameObject>(currentTime, p_object);
-                                break;
-                            }
+					obj.transform.parent = poolableParents[poolable];
 
-                        }
+					obj.SetActive(false);
 
-                        if (!isObjectAlreadySet)
-                        {
-                            m_pooledObjectsWithLifeTime[currentPoolableObject].Add(new Tuple<float, GameObject>(currentTime, p_object));
-                        }
-                    }
-                    else
-                    {
-                        m_pooledObjectsWithLifeTime.Add(currentPoolableObject, new List<Tuple<float, GameObject>>());
-                        m_pooledObjectsWithLifeTime[currentPoolableObject].Add(new Tuple<float, GameObject>(currentTime, p_object));
-                    }
-                }
-            }
-        }
-    }
+					poolDictionary[poolable].Enqueue(obj);
+				}
+				else
+				{
+					APoolableObject spawnedObject = poolDictionary[poolable].Dequeue();
 
-    private void CheckPooledObjectsLifeTime()
-    {
-        foreach (var pooledObjectWithLifeTime in m_pooledObjectsWithLifeTime)
-        {
-            if (pooledObjectWithLifeTime.Key.m_lifeTime > 0.0f)
-            {
-                foreach (var tuple in pooledObjectWithLifeTime.Value)
-                {
-                    if (tuple.Item2 != null)
-                    {
-                        if (tuple.Item2.activeSelf)
-                        {
-                            float timer = tuple.Item1 + pooledObjectWithLifeTime.Key.m_lifeTime;
+					if(pooledObjectsWithLifeTime.TryGetValue(poolable, out var poolableList))
+					{
+						for (int i = 0; i < poolableList.Count; i++)
+						{
+							if (poolableList[i].Item2 == spawnedObject)
+							{
+								poolableList.RemoveAt(i);
+								break;
+							}
+						}
+					}
 
-                            if (m_currentTime > timer)
-                            {
-                                Debug.Log("Disable");
-                                tuple.Item2.SetActive(false);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+					Destroy(spawnedObject.gameObject);
+				}
 
-    private PoolableObject GetPoolableObject(string p_key)
-    {
-        for (int i = 0; i < m_poolableObjectList.Count; i++)
-        {
-            if (m_poolableObjectList[i].m_key == p_key)
-            {
-                return m_poolableObjectList[i];
-            }
-        }
+				count++;
+			}
+		}
 
-        Debug.LogWarning($"Poolable Object with Key {p_key} doesn't exist.");
+		public APoolableObject SpawnObjectFromPool<T>(T poolable, Vector3 position, Quaternion rotation) where T : APoolableObject
+		{
+			if (!poolDictionary.ContainsKey(poolable))
+			{
+				Debug.LogWarning($"Pool with Key {poolable} doesn't exist.");
+				return null;
+			}
 
-        return null;
-    }
+			APoolableObject poolableInstanceDequeue = poolDictionary[poolable].Dequeue();
+
+			if (poolableInstanceDequeue.gameObject.activeSelf && !poolable.canRecyleWithoutLifeTime)
+			{
+				var poolableInstance = Instantiate(poolable, position, rotation);
+
+				poolableInstance.transform.SetParent(poolableParents[poolable]);
+
+				poolableInstance.transform.position = position;
+				poolableInstance.transform.rotation = rotation;
+
+				poolDictionary[poolable].Enqueue(poolableInstanceDequeue);
+				poolDictionary[poolable].Enqueue(poolableInstance);
+
+				TryAddObjectToLifeTimeDictionary(poolable, poolableInstance);
+
+				poolableInstance.Pool();
+
+				return poolableInstance;
+			}
+
+			poolableInstanceDequeue.transform.position = position;
+			poolableInstanceDequeue.transform.rotation = rotation;
+			poolableInstanceDequeue.SetActive(true);
+
+			poolableInstanceDequeue.Pool();
+
+			poolDictionary[poolable].Enqueue(poolableInstanceDequeue);
+
+			TryAddObjectToLifeTimeDictionary(poolable, poolableInstanceDequeue);
+
+			return poolableInstanceDequeue;
+		}
+
+		private void TryAddObjectToLifeTimeDictionary<T>(T poolable, APoolableObject poolableInstance) where T : APoolableObject
+		{
+			if (poolable.lifeTime > 0.0f)
+			{
+				float currentTime = Time.time;
+
+				if (pooledObjectsWithLifeTime.ContainsKey(poolable))
+				{
+					bool isObjectAlreadySet = false;
+
+					for (int i = 0; i < pooledObjectsWithLifeTime[poolable].Count; i++)
+					{
+						if (pooledObjectsWithLifeTime[poolable][i].Item2 == poolableInstance)
+						{
+							pooledObjectsWithLifeTime[poolable][i] = new Tuple<float, APoolableObject>(currentTime, poolableInstance);
+							isObjectAlreadySet = true;
+							break;
+						}
+					}
+
+					if (!isObjectAlreadySet)
+					{
+						pooledObjectsWithLifeTime[poolable].Add(new Tuple<float, APoolableObject>(currentTime, poolableInstance));
+					}
+				}
+				else
+				{
+					pooledObjectsWithLifeTime.Add(poolable, new List<Tuple<float, APoolableObject>>());
+					pooledObjectsWithLifeTime[poolable].Add(new Tuple<float, APoolableObject>(currentTime, poolableInstance));
+				}
+			}
+		}
+
+		private void CheckPooledObjectsLifeTime()
+		{
+			foreach (var pooledObjectWithLifeTime in pooledObjectsWithLifeTime)
+			{
+				foreach (var pair in pooledObjectWithLifeTime.Value)
+				{
+					if (pair.Item2.gameObject.activeSelf)
+					{
+						float timer = pair.Item1 + pair.Item2.lifeTime;
+
+						if (Time.time > timer)
+						{
+							pair.Item2.SetActive(false);
+						}
+					}
+				}
+			}
+		}
+
+		public void Clear<T>(T poolable) where T : APoolableObject
+		{
+			if (!poolDictionary.ContainsKey(poolable))
+				return;
+
+			while (poolDictionary[poolable].Count > 0)
+			{
+				APoolableObject spawnedObject = poolDictionary[poolable].Dequeue();
+
+				Destroy(spawnedObject.gameObject);
+			}
+
+			poolDictionary[poolable].Clear();
+			poolDictionary.Remove(poolable);
+
+			if (pooledObjectsWithLifeTime.ContainsKey(poolable))
+			{
+				pooledObjectsWithLifeTime[poolable].Clear();
+				pooledObjectsWithLifeTime.Remove(poolable);
+			}
+
+			Destroy(poolableParents[poolable].gameObject);
+		}
+
+		public void ClearAll()
+		{
+			var poolDictionaryKey = new List<APoolableObject>();
+
+			foreach (var poolable in poolDictionary)
+			{
+				poolDictionaryKey.Add(poolable.Key);
+			}
+
+			foreach (var key in poolDictionaryKey)
+			{
+				Clear(key);
+			}
+
+			poolDictionary.Clear();
+
+			poolableParents.Clear();
+
+			poolableObjects.Clear();
+
+			pooledObjectsWithLifeTime.Clear();
+		}
+
+		public void RecycleAll()
+		{
+			foreach (var poolables in poolableObjects)
+			{
+				Recycle(poolables);
+			}
+		}
+
+		public void Recycle<T>(T poolable) where T : APoolableObject
+		{
+			if(!poolDictionary.ContainsKey(poolable))
+				return;
+
+			foreach (var poolableObject in poolDictionary[poolable])
+			{
+				poolableObject.SetActive(false);
+			}
+
+			if (pooledObjectsWithLifeTime.ContainsKey(poolable))
+			{
+				pooledObjectsWithLifeTime[poolable].Clear();
+				pooledObjectsWithLifeTime.Clear();
+			}
+		}
+
+		private void GenerateKeyParentAndSet<T>(T poolable) where T : APoolableObject
+		{
+			if(poolableParents.ContainsKey(poolable))
+				return;
+
+			GameObject parent = new GameObject("[" + poolable.name + "]");
+
+			parent.transform.parent = transform;
+
+			poolableParents[poolable] = parent.transform;
+		}
+	}
 }
