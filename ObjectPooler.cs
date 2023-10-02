@@ -1,7 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
+
 using UnityEngine;
+
 using Utils.Extensions;
 
 namespace Pooling
@@ -35,12 +36,11 @@ namespace Pooling
 			}
 		}
 
-		// Use this for initialization
 		void Awake()
 		{
 			if (instance != null && instance != this)
 			{
-				Destroy(this.gameObject);
+				Destroy(gameObject);
 				return;
 			}
 
@@ -73,13 +73,12 @@ namespace Pooling
 
 				GenerateKeyParentAndSet(poolableObject);
 
-				var obj = Instantiate(poolableObject);
+				var instancedPoolable = Instantiate(poolableObject);
 
-				obj.transform.parent = poolableParents[poolableObject];
+				instancedPoolable.Initialize(poolableParents[poolableObject]);
+				instancedPoolable.SetActive(false);
 
-				obj.SetActive(false);
-
-				gameObjectQueue.Enqueue(obj);
+				gameObjectQueue.Enqueue(instancedPoolable);
 				
 				poolDictionary.Add(poolableObject, gameObjectQueue);
 			}
@@ -94,11 +93,12 @@ namespace Pooling
 
 			for (int i = 0; i < size - 1; i++)
 			{
-				var obj = Instantiate(poolable);
+				var instancedPoolable = Instantiate(poolable);
 
-				obj.transform.SetParent(poolableParents[poolable]);
-				obj.SetActive(false);
-				poolDictionary[poolable].Enqueue(obj);
+				instancedPoolable.Initialize(poolableParents[poolable]);
+				instancedPoolable.SetActive(false);
+
+				poolDictionary[poolable].Enqueue(instancedPoolable);
 			}
 		}
 
@@ -115,13 +115,12 @@ namespace Pooling
 
 			GenerateKeyParentAndSet(poolable);
 
-			var obj = Instantiate(poolable);
+			var instancedPoolable = Instantiate(poolable);
 
-			obj.transform.parent = poolableParents[poolable];
+			instancedPoolable.Initialize(poolableParents[poolable]);
+			instancedPoolable.SetActive(false);
 
-			obj.SetActive(false);
-
-			gameObjectQueue.Enqueue(obj);
+			gameObjectQueue.Enqueue(instancedPoolable);
 
 			poolDictionary.Add(poolable, gameObjectQueue);
 		}
@@ -146,13 +145,12 @@ namespace Pooling
 			{
 				if (isBigger)
 				{
-					var obj = Instantiate(poolable);
+					var instancedPoolable = Instantiate(poolable);
 
-					obj.transform.parent = poolableParents[poolable];
+					instancedPoolable.Initialize(poolableParents[poolable]);
+					instancedPoolable.SetActive(false);
 
-					obj.SetActive(false);
-
-					poolDictionary[poolable].Enqueue(obj);
+					poolDictionary[poolable].Enqueue(instancedPoolable);
 				}
 				else
 				{
@@ -169,6 +167,8 @@ namespace Pooling
 							}
 						}
 					}
+
+					spawnedObject.Free();
 
 					Destroy(spawnedObject.gameObject);
 				}
@@ -191,7 +191,7 @@ namespace Pooling
 			{
 				var poolableInstance = Instantiate(poolable, position, rotation);
 
-				poolableInstance.transform.SetParent(poolableParents[poolable]);
+				poolableInstance.Initialize(poolableParents[poolable]);
 
 				poolableInstance.transform.position = position;
 				poolableInstance.transform.rotation = rotation;
@@ -264,7 +264,7 @@ namespace Pooling
 
 						if (Time.time > timer)
 						{
-							pair.Item2.SetActive(false);
+							pair.Item2.Free();
 						}
 					}
 				}
@@ -279,6 +279,8 @@ namespace Pooling
 			while (poolDictionary[poolable].Count > 0)
 			{
 				APoolableObject spawnedObject = poolDictionary[poolable].Dequeue();
+
+				spawnedObject.Free();
 
 				Destroy(spawnedObject.gameObject);
 			}
@@ -333,7 +335,7 @@ namespace Pooling
 
 			foreach (var poolableObject in poolDictionary[poolable])
 			{
-				poolableObject.SetActive(false);
+				poolableObject.Free();
 			}
 
 			if (pooledObjectsWithLifeTime.ContainsKey(poolable))
